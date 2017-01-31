@@ -1,0 +1,243 @@
+apply plugin: 'java'
+apply plugin: 'eclipse'
+
+def jarName = 'HinemosAgent'
+
+project.group = 'hinemos'
+version = '5.0.3'
+
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
+
+repositories{
+	mavenCentral()
+}
+configurations{
+	jaxws
+	genws
+	hinemos_manager
+}
+dependencies{
+	compile group: 'commons-logging', name: 'commons-logging', version: '1.2'
+	compile group: 'log4j', name: 'log4j', version: '1.2.17'
+	compile files('../hinemos-common/build/libs/HinemosCommon.jar')
+	compile files("${buildDir}/libs/AgentWS.jar")
+
+	// JNA library
+	compile group: 'net.java.dev.jna', name: 'jna', version: '4.3.0'
+	compile group: 'net.java.dev.jna', name: 'jna-platform', version: '4.3.0'
+
+	jaxws 'com.sun.xml.ws:jaxws-tools:2.2.10'
+	genws group: 'commons-logging', name: 'commons-logging', version: '1.2'
+	genws group: 'org.eclipse.persistence', name: 'javax.persistence', version: '2.1.1'
+	genws files('../hinemos-common/build/libs/HinemosCommon.jar')
+	genws files('../hinemos-manager/build/libs/HinemosModel.jar')
+	hinemos_manager files('../hinemos-manager/build/libs/HinemosManager.jar')
+}
+
+eclipse{
+	project{
+		name = jarName 
+	}
+}
+
+tasks.withType(JavaCompile){
+	options.encoding = 'UTF-8'
+}
+def manifestDef = {
+	attributes(
+		'Hinemos-Version': version,
+		'Build-Date': new Date().format('yyyy-MM-dd HH:mm:ss', TimeZone.getTimeZone('UTC')))
+}
+
+jar{
+	manifest(manifestDef)
+}
+
+
+// Doc
+task sourcesJar(type: Jar, dependsOn: classes){
+	classifier = 'sources'
+	from sourceSets.main.allSource
+}
+task javadocJar(type: Jar, dependsOn: javadoc){
+	classifier = 'javadoc'
+	from javadoc.destinationDir
+}
+artifacts{
+	archives sourcesJar
+	//archives javadocJar
+}
+
+// Source directories
+sourceSets{
+	main{
+		java{
+			//srcDirs += [file('src/main/src_agent'), file('src/main/src_manager_cli')]
+			srcDirs += [file('src/main/src_agent')]
+		}
+		resources{
+			srcDirs += [file('src/main/src_agent')]
+			include '**/*.properties'
+		}
+	}
+}
+
+// Extract WSDL from HinemosManager.jar
+task generateWSDL{
+	def inputDir = file("${buildDir}/classes/main")
+	def classesDir = file("${buildDir}/wsgen/classes")
+	def srcDir = file("${buildDir}/wsgen/src")
+	def wsdlDir = file("${buildDir}/wsgen/wsdl")
+
+	inputs.dir inputDir
+	outputs.files classesDir, srcDir, wsdlDir
+
+	doLast{
+		classesDir.mkdirs()
+		srcDir.mkdirs()
+		wsdlDir.mkdirs()
+
+		//wsgen -s build/wsgen/src -d build/wsgen/classes -cp ../hinemos-common/build/libs/HinemosCommon.jar:lib/commons-logging-1.2.jar:build/libs/HinemosManager.jar:build/libs/HinemosModel.jar:build/classes/main com.clustercontrol.ws.access.AccessEndpoint
+		//OR wsgen -s build/wsgen/src -d build/wsgen/classes -cp ../hinemos-common/build/libs/HinemosCommon.jar:lib/commons-logging-1.2.jar:build/classes/main com.clustercontrol.ws.access.AccessEndpoint
+		//wsgen -d build/wsgen/classes -wsdl -cp ../hinemos-common/build/libs/HinemosCommon.jar:lib/commons-logging-1.2.jar:build/classes/main com.clustercontrol.ws.access.AccessEndpoint
+		ant{
+			taskdef(name:'wsgen', classname:'com.sun.tools.ws.ant.WsGen', classpath: configurations.jaxws.asPath)
+
+			// Search for endpoint classes from source and run wsgen
+			configurations.hinemos_manager.asFileTree.each{
+				zipTree(it).matching{
+					include '**/*Endpoint.class'
+				}.each{
+					logger.info "Found $it..."
+					def classname = it.path.replaceFirst(/.*\/(com\/clustercontrol)/, '$1').replaceFirst(/\.class$/, '').replaceAll('/', '.')
+					if(classname ==~ /com\..+Endpoint/){
+						logger.info "wsgen ${classname}..."
+
+						wsgen(
+							verbose   : true,
+							debug     : true,
+							keep      : false,
+							destdir   : classesDir,
+							sourcedestdir   : srcDir,
+							resourcedestdir : wsdlDir,
+							genwsdl   : true,
+							classpath : files(configurations.genws, configurations.hinemos_manager).asPath,
+							sei       : classname)
+					}
+				}
+			}
+		}
+	}	
+}
+
+// Then generate web service source based on the generated WSDL
+task generateAgentWS(dependsOn: generateWSDL){
+	ext.wsdlDir = "${buildDir}/wsgen/wsdl"
+	ext.wsdlFileTree = fileTree(dir: wsdlDir, include: '*EndpointService.wsdl')
+	ext.outputDir = "${buildDir}/ws-agent/src"
+	ext.classesDir = "${buildDir}/ws-agent/classes"
+
+	inputs.dir wsdlDir
+	outputs.dir outputDir
+
+	doLast{
+		project.ant{
+			taskdef(name:'wsimport', classname:'com.sun.tools.ws.ant.WsImport', classpath:configurations.jaxws.asPath)
+
+			mkdir(dir: outputDir)
+			mkdir(dir: classesDir)
+
+			logger.info "${wsdlFileTree.files.size()} file(s) matched"
+			wsdlFileTree.each{
+				// Only need AgentEndpointService.wsdl and CloudCommonEndpointService.wsdl
+				if(!(it.name ==~ /AgentEndpointService\.wsdl/ || it.name ==~ /CloudCommonEndpointService\.wsdl/)) return
+
+				logger.info "wsimport ${it}..."
+
+				// wsimport -s build/wsimport/src/ http://localhost:8080/WS/Hello?wsdl
+				wsimport(
+					debug     : false,
+					verbose   : false,
+					sourcedestdir : outputDir,
+					destdir   : classesDir,
+					keep      : false,
+					extension : false,
+					wsdl      : it)
+			}
+		}
+	}
+}
+
+// Pack AgentWS.jar
+task exportAgentWS(type: Jar){
+	description 'Generate AgentWS.jar.'
+
+	archiveName = 'AgentWS.jar'
+	dependsOn generateAgentWS
+
+	includeEmptyDirs = false
+	from file("${buildDir}/ws-agent/classes")
+
+	manifest(manifestDef)
+}
+compileJava.dependsOn exportAgentWS
+
+// Also generate web service source for client based on the generated WSDL
+task generateClientWS(dependsOn: generateWSDL){
+	ext.wsdlDir = "${buildDir}/wsgen/wsdl"
+	ext.wsdlFileTree = fileTree(dir: wsdlDir, include: '*EndpointService.wsdl')
+	ext.outputDir = "${buildDir}/ws-client/src"
+	ext.classesDir = "${buildDir}/ws-client/classes"
+
+	inputs.dir wsdlDir
+	outputs.dir outputDir
+
+	doLast{
+		project.ant{
+			taskdef(name:'wsimport', classname:'com.sun.tools.ws.ant.WsImport', classpath:configurations.jaxws.asPath)
+
+			mkdir(dir: outputDir)
+			mkdir(dir: classesDir)
+
+			logger.info "${wsdlFileTree.files.size()} file(s) matched"
+			wsdlFileTree.each{
+				// Exclude AgentEndpointService.wsdl and CloudCommonEndpointService.wsdl (for agent only)
+				if(it.name ==~ /AgentEndpointService\.wsdl/ || it.name ==~ /CloudCommonEndpointService\.wsdl/) return
+
+				logger.info "wsimport ${it}..."
+
+				// wsimport -s build/wsimport/src/ http://localhost:8080/WS/Hello?wsdl
+				wsimport(
+					debug     : false,
+					verbose   : false,
+					sourcedestdir : outputDir,
+					destdir   : classesDir,
+					keep      : false,
+					extension : false,
+					wsdl      : it)
+			}
+		}
+	}
+}
+
+// Pack ClientWS.jar (for Client only)
+task exportClientWS(type: Jar){
+	description 'Generate ClientWS.jar.'
+
+	archiveName = 'ClientWS.jar'
+	dependsOn generateClientWS
+
+	includeEmptyDirs = false
+	from file("${buildDir}/ws-client/classes")
+
+	manifest(manifestDef)
+}
+
+task export(type: Copy, dependsOn: build){
+	description 'Rename the jar file to its original name then you can replace to Hinemos directly.'
+	from "${rootProject.buildDir}/${rootProject.libsDirName}"
+	into "${rootProject.buildDir}/${rootProject.libsDirName}"
+	rename "${project.name}-$version", jarName
+}
+

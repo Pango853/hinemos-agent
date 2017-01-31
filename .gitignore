@@ -1,8 +1,17 @@
-Thumbs.db
 .DS_Store
+Thumbs.db
 *~
 *.swp
 
-/bin/
-/target/
+.gradle/
+
+# output
+build/
+bin/
+.classpath
+.project
+.settings/
+
+# libs
+lib/
 
