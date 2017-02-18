@@ -31,8 +31,8 @@ dependencies{
 	genws group: 'commons-logging', name: 'commons-logging', version: '1.2'
 	genws group: 'org.eclipse.persistence', name: 'javax.persistence', version: '2.1.1'
 	genws files('../common/build/libs/HinemosCommon.jar')
-	genws files('../hinemos-manager/build/libs/HinemosModel.jar')
-	hinemos_manager files('../hinemos-manager/build/libs/HinemosManager.jar')
+	genws files('../manager/build/libs/HinemosModel.jar')
+	hinemos_manager files('../manager/build/libs/HinemosManager.jar')
 }
 
 eclipse{
@@ -110,10 +110,9 @@ task generateWSDL{
 					include '**/*Endpoint.class'
 				}.each{
 					logger.info "Found $it..."
-					def classname = it.path.replaceFirst(/.*\/(com\/clustercontrol)/, '$1').replaceFirst(/\.class$/, '').replaceAll('/', '.')
+					def classname = it.path.replace('\\', '/').replaceFirst(/.*\/(com\/clustercontrol)/, '$1').replaceFirst(/\.class$/, '').replaceAll('/', '.')
 					if(classname ==~ /com\..+Endpoint/){
 						logger.info "wsgen ${classname}..."
-
 						wsgen(
 							verbose   : true,
 							debug     : true,
@@ -236,8 +235,10 @@ task exportClientWS(type: Jar){
 
 task export(type: Copy, dependsOn: build){
 	description 'Rename the jar file to its original name then you can replace to Hinemos directly.'
-	from "${rootProject.buildDir}/${rootProject.libsDirName}"
-	into "${rootProject.buildDir}/${rootProject.libsDirName}"
+	//from "${rootProject.buildDir}/${rootProject.libsDirName}"
+	//into "${rootProject.buildDir}/${rootProject.libsDirName}"
+	from "${buildDir}/${libsDirName}"
+	into "${buildDir}/${libsDirName}"
 	rename "${project.name}-$version", jarName
 }
 
